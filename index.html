@@ -336,7 +336,7 @@ body.entered .rail{opacity:1}
   <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
   <span class="music-label">Träumerei <small>Robert Schumann</small></span>
 </button>
-<audio id="music" loop preload="auto">
+<audio id="music" loop preload="auto" crossorigin="anonymous">
   <source src="traumerei.mp3" type="audio/mpeg">
   <source src="https://upload.wikimedia.org/wikipedia/commons/transcoded/0/06/Robert_Schumann_-_scenes_from_childhood%2C_op._15_-_vii._dreaming.ogg/Robert_Schumann_-_scenes_from_childhood%2C_op._15_-_vii._dreaming.ogg.mp3" type="audio/mpeg">
   <source src="https://upload.wikimedia.org/wikipedia/commons/0/06/Robert_Schumann_-_scenes_from_childhood%2C_op._15_-_vii._dreaming.ogg" type="audio/ogg">
@@ -970,14 +970,39 @@ body.entered .rail{opacity:1}
 
   /* ---------- musica (sempre in sottofondo) ---------- */
   const music = $('#music'), musicBtn = $('#musicBtn');
-  const MUSIC_VOL = .6;
+  /* La registrazione è incisa molto piano (circa −33 dB di media, picchi a −13 dB):
+     la amplifichiamo con Web Audio e un limitatore evita che distorca.
+     Il guadagno finale regola anche le dissolvenze, e funziona pure su iPhone, dove audio.volume è bloccato. */
+  const BOOST = 6;
+  let ac = null, outGain = null;
+  function buildGraph() {
+    if (ac) return true;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      ac = new AC();
+      const src = ac.createMediaElementSource(music);
+      const boost = ac.createGain(); boost.gain.value = BOOST;
+      const lim = ac.createDynamicsCompressor();
+      lim.threshold.value = -12; lim.knee.value = 6; lim.ratio.value = 12; lim.attack.value = .003; lim.release.value = .25;
+      outGain = ac.createGain(); outGain.gain.value = 0;
+      src.connect(boost); boost.connect(lim); lim.connect(outGain); outGain.connect(ac.destination);
+      return true;
+    } catch (e) { ac = null; outGain = null; return false; }
+  }
   let musicOn = true, fadeTimer = 0;
-  function fade(a, to, ms, done) {
+  function fade(to, ms, done) {
     clearInterval(fadeTimer);
-    const from = a.volume, t0 = performance.now();
+    if (outGain) {
+      const now = ac.currentTime, g = outGain.gain;
+      g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(to, now + ms / 1000);
+      if (done) fadeTimer = setTimeout(done, ms);
+      return;
+    }
+    const from = music.volume, t0 = performance.now();
     fadeTimer = setInterval(() => {
       const k = clamp((performance.now() - t0) / ms);
-      try { a.volume = clamp(lerp(from, to, k)); } catch (e) {}
+      try { music.volume = clamp(lerp(from, to, k)); } catch (e) {}
       if (k >= 1) { clearInterval(fadeTimer); if (done) done(); }
     }, 40);
   }
@@ -985,16 +1010,17 @@ body.entered .rail{opacity:1}
   const lastSrc = music.querySelector('source:last-of-type');
   if (lastSrc) lastSrc.addEventListener('error', () => musicBtn.classList.add('missing'));
   function startMusic() {
-    try { music.volume = 0; } catch (e) {}
+    if (buildGraph()) { try { music.volume = 1; } catch (e) {} if (ac.state === 'suspended') ac.resume(); }
+    else { try { music.volume = 0; } catch (e) {} }
     const pr = music.play();
-    if (pr && pr.then) pr.then(() => fade(music, MUSIC_VOL, 5000)).catch(() => {});
+    if (pr && pr.then) pr.then(() => fade(1, 5000)).catch(() => {});
   }
   musicBtn.addEventListener('click', () => {
     musicOn = !musicOn;
     musicBtn.classList.toggle('off', !musicOn);
     musicBtn.setAttribute('aria-pressed', musicOn);
-    if (musicOn) { if (music.paused) music.play().catch(() => {}); fade(music, MUSIC_VOL, 1800); }
-    else fade(music, 0, 1200, () => music.pause());
+    if (musicOn) { if (ac && ac.state === 'suspended') ac.resume(); if (music.paused) music.play().catch(() => {}); fade(1, 1800); }
+    else fade(0, 1200, () => music.pause());
   });
 
   /* ---------- ingresso ---------- */
